@@ -13,6 +13,7 @@ env/
 build/
 dist/
 *.spec
+installer/
 
 # Local database
 data/
