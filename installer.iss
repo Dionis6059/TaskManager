@@ -1,5 +1,5 @@
 #define MyAppName "Task Manager"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "Dionis6059"
 #define MyAppExeName "TaskManager.exe"
 
@@ -16,7 +16,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 
 OutputDir=installer
-OutputBaseFilename=TaskManager-Setup-1.1.0
+OutputBaseFilename=TaskManager-Setup-1.1.1
 
 Compression=lzma
 SolidCompression=yes
@@ -26,13 +26,16 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\{#MyAppExeName}
+
+SetupIconFile=assets\app_icon.ico
 
 [Files]
 Source: "dist\TaskManager\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Task Manager"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\Task Manager"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\Task Manager"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\Task Manager"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Дополнительные параметры:"; Flags: unchecked

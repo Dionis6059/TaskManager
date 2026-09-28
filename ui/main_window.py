@@ -226,9 +226,12 @@ class MainWindow(QMainWindow):
             self
         )
 
-        tray_icon = self.style().standardIcon(
-            QStyle.SP_ComputerIcon
-        )
+        tray_icon = QApplication.windowIcon()
+
+        if tray_icon.isNull():
+            tray_icon = self.style().standardIcon(
+                QStyle.SP_ComputerIcon
+            )
 
         self.tray_icon.setIcon(
             tray_icon
