@@ -1,4 +1,8 @@
-from datetime import date, timedelta
+from datetime import (
+    date,
+    datetime,
+    timedelta,
+)
 
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -24,10 +28,13 @@ from PySide6.QtGui import (
     QBrush,
     QFont,
     QAction,
+    QPainter,
+    QPixmap,
 )
 from PySide6.QtCore import (
     QThread,
     QTimer,
+    Qt,
 )
 
 from ui.add_task_dialog import AddTaskDialog
@@ -46,40 +53,192 @@ from database.task_repository import (
 )
 
 from services.update_worker import UpdateWorker
+from services.theme_manager import (
+    build_stylesheet,
+    get_saved_theme,
+    get_theme,
+    get_theme_background,
+    get_theme_overlay,
+)
+
+
+CRITICAL_NOTIFICATION_HOURS = {
+    9,
+    15,
+    21,
+}
+
+MIN_CRITICAL_NOTIFICATION_INTERVAL = timedelta(
+    hours=5
+)
+
+
+class BackgroundWidget(QWidget):
+    def __init__(
+        self,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+
+        self.theme_name = get_saved_theme()
+        self.background_pixmap = QPixmap()
+
+        self.reload_theme()
+
+    def set_theme(
+        self,
+        theme_name: str,
+    ) -> None:
+        self.theme_name = theme_name
+        self.reload_theme()
+        self.update()
+
+    def reload_theme(self) -> None:
+        image_path = get_theme_background(
+            self.theme_name
+        )
+
+        if (
+            image_path is not None
+            and image_path.exists()
+        ):
+            self.background_pixmap = QPixmap(
+                str(image_path)
+            )
+        else:
+            self.background_pixmap = QPixmap()
+
+    def paintEvent(
+        self,
+        event,
+    ) -> None:
+        painter = QPainter(self)
+
+        theme = get_theme(
+            self.theme_name
+        )
+
+        painter.fillRect(
+            self.rect(),
+            QColor(theme["window"]),
+        )
+
+        if not self.background_pixmap.isNull():
+            scaled = self.background_pixmap.scaled(
+                self.size(),
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation,
+            )
+
+            x = (
+                scaled.width()
+                - self.width()
+            ) // 2
+
+            y = (
+                scaled.height()
+                - self.height()
+            ) // 2
+
+            painter.drawPixmap(
+                0,
+                0,
+                scaled,
+                x,
+                y,
+                self.width(),
+                self.height(),
+            )
+
+            red, green, blue, alpha = (
+                get_theme_overlay(
+                    self.theme_name
+                )
+            )
+
+            if alpha > 0:
+                painter.fillRect(
+                    self.rect(),
+                    QColor(
+                        red,
+                        green,
+                        blue,
+                        alpha,
+                    ),
+                )
+
+        super().paintEvent(event)
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
-        self.setWindowTitle("Task Manager")
-        self.resize(1250, 920)
+        self.setWindowTitle(
+            "Task Manager"
+        )
+        self.resize(
+            1250,
+            920,
+        )
 
         self.allow_close = False
-        self.tray_hint_shown = False
 
-        # -----------------------------------------------------
+        self.current_theme = (
+            get_saved_theme()
+        )
+
+        # =====================================================
         # ОБНОВЛЕНИЯ
-        # -----------------------------------------------------
+        # =====================================================
 
         self.update_thread = None
         self.update_worker = None
         self.pending_update = None
         self.automatic_update_check_started = False
 
-        # -----------------------------------------------------
-        # СИСТЕМНЫЙ ТРЕЙ
-        # -----------------------------------------------------
+        # Используем, чтобы клик по уведомлению
+        # о задаче не открывал окно обновления.
+        self.last_tray_message_type = None
 
-        self.tray_icon = QSystemTrayIcon(self)
+        # =====================================================
+        # КРИТИЧЕСКИЕ НАПОМИНАНИЯ
+        # =====================================================
+
+        self.last_critical_notification_at = None
+        self.sent_critical_slots = set()
+
+        self.critical_timer = QTimer(
+            self
+        )
+        self.critical_timer.setInterval(
+            60 * 1000
+        )
+        self.critical_timer.timeout.connect(
+            self.check_scheduled_critical_notification
+        )
+
+        # =====================================================
+        # ТРЕЙ
+        # =====================================================
+
+        self.tray_icon = QSystemTrayIcon(
+            self
+        )
 
         tray_icon = self.style().standardIcon(
             QStyle.SP_ComputerIcon
         )
 
-        self.tray_icon.setIcon(tray_icon)
-        self.setWindowIcon(tray_icon)
-        self.tray_icon.setToolTip("Task Manager")
+        self.tray_icon.setIcon(
+            tray_icon
+        )
+        self.setWindowIcon(
+            tray_icon
+        )
+        self.tray_icon.setToolTip(
+            "Task Manager"
+        )
 
         self.tray_menu = QMenu()
 
@@ -121,26 +280,29 @@ class MainWindow(QMainWindow):
 
         self.tray_icon.show()
 
-        # -----------------------------------------------------
-        # ГЛАВНОЕ ОКНО
-        # -----------------------------------------------------
+        # =====================================================
+        # ОСНОВА ОКНА
+        # =====================================================
 
-        central_widget = QWidget()
-        self.setCentralWidget(
-            central_widget
+        self.central_background = (
+            BackgroundWidget()
         )
 
-        self.layout = QVBoxLayout()
-        self.layout.setSpacing(12)
+        self.setCentralWidget(
+            self.central_background
+        )
+
+        self.layout = QVBoxLayout(
+            self.central_background
+        )
+        self.layout.setSpacing(
+            12
+        )
         self.layout.setContentsMargins(
             14,
             14,
             14,
             14,
-        )
-
-        central_widget.setLayout(
-            self.layout
         )
 
         self.title_label = QLabel(
@@ -155,12 +317,14 @@ class MainWindow(QMainWindow):
             )
         )
 
-        # -----------------------------------------------------
+        # =====================================================
         # ВЕРХНИЕ КНОПКИ
-        # -----------------------------------------------------
+        # =====================================================
 
         self.buttons_layout = QHBoxLayout()
-        self.buttons_layout.setSpacing(8)
+        self.buttons_layout.setSpacing(
+            8
+        )
 
         self.all_tasks_button = QPushButton(
             "Все задачи"
@@ -228,23 +392,29 @@ class MainWindow(QMainWindow):
             self.add_task_button,
             self.refresh_reminders_button,
         ):
-            button.setMinimumHeight(34)
+            button.setMinimumHeight(
+                34
+            )
             self.buttons_layout.addWidget(
                 button
             )
 
-        # -----------------------------------------------------
+        # =====================================================
         # ФИЛЬТРЫ
-        # -----------------------------------------------------
+        # =====================================================
 
         self.filters_layout = QHBoxLayout()
-        self.filters_layout.setSpacing(8)
+        self.filters_layout.setSpacing(
+            8
+        )
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(
             "Поиск по названию..."
         )
-        self.search_input.setMinimumHeight(32)
+        self.search_input.setMinimumHeight(
+            32
+        )
 
         self.category_filter = QComboBox()
         self.status_filter = QComboBox()
@@ -294,7 +464,9 @@ class MainWindow(QMainWindow):
             self.apply_filters_button,
             self.reset_filters_button,
         ):
-            widget.setMinimumHeight(32)
+            widget.setMinimumHeight(
+                32
+            )
 
         self.filters_layout.addWidget(
             self.search_input,
@@ -321,9 +493,9 @@ class MainWindow(QMainWindow):
             1,
         )
 
-        # -----------------------------------------------------
+        # =====================================================
         # НАПОМИНАНИЯ
-        # -----------------------------------------------------
+        # =====================================================
 
         self.reminders_label = QLabel(
             "Напоминания"
@@ -345,18 +517,21 @@ class MainWindow(QMainWindow):
             QSizePolicy.Expanding,
             QSizePolicy.Fixed,
         )
+        self.reminders_list.setSpacing(
+            4
+        )
 
-        self.reminders_list.setSpacing(4)
-
-        # -----------------------------------------------------
-        # ОСНОВНЫЕ ПРЕДСТАВЛЕНИЯ
-        # -----------------------------------------------------
+        # =====================================================
+        # ПРЕДСТАВЛЕНИЯ
+        # =====================================================
 
         self.tasks_list = QListWidget()
         self.tasks_list.itemDoubleClicked.connect(
             self.open_edit_task_dialog_from_item
         )
-        self.tasks_list.setSpacing(6)
+        self.tasks_list.setSpacing(
+            6
+        )
 
         self.calendar_view = CalendarView()
         self.calendar_view.task_double_clicked.connect(
@@ -371,6 +546,9 @@ class MainWindow(QMainWindow):
         )
 
         self.settings_view = SettingsView()
+        self.settings_view.theme_changed.connect(
+            self.apply_theme
+        )
 
         self.stacked_widget = QStackedWidget()
 
@@ -389,10 +567,6 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(
             self.settings_view
         )
-
-        # -----------------------------------------------------
-        # ДОБАВЛЯЕМ ВСЁ В ОКНО
-        # -----------------------------------------------------
 
         self.layout.addWidget(
             self.title_label
@@ -413,9 +587,15 @@ class MainWindow(QMainWindow):
             self.stacked_widget
         )
 
-        self.apply_styles()
+        # =====================================================
+        # ПЕРВИЧНАЯ ЗАГРУЗКА
+        # =====================================================
 
         self.current_view = "all"
+
+        self.apply_theme(
+            self.current_theme
+        )
 
         self.refresh_category_filter()
         self.load_tasks()
@@ -428,103 +608,50 @@ class MainWindow(QMainWindow):
         self.update_filters_visibility()
         self.update_reminders_visibility()
 
-        self.show_startup_notification()
+        # Критические задачи показываем при запуске.
+        QTimer.singleShot(
+            1200,
+            self.show_startup_critical_notification,
+        )
 
-        # -----------------------------------------------------
-        # АВТОМАТИЧЕСКАЯ ПРОВЕРКА ОБНОВЛЕНИЙ
-        #
-        # Даём приложению сначала спокойно открыться,
-        # потом запускаем проверку в отдельном потоке.
-        # -----------------------------------------------------
+        self.critical_timer.start()
 
+        # Автопроверка обновлений.
         QTimer.singleShot(
             4000,
             self.start_automatic_update_check,
         )
 
     # =========================================================
-    # СТИЛИ
+    # ТЕМЫ
     # =========================================================
 
-    def apply_styles(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow {
-                background-color: #202124;
-            }
+    def apply_theme(
+        self,
+        theme_name: str,
+    ) -> None:
+        self.current_theme = theme_name
 
-            QLabel {
-                color: #f1f3f4;
-            }
+        application = QApplication.instance()
 
-            QCheckBox {
-                color: #f1f3f4;
-                spacing: 8px;
-            }
+        if application is not None:
+            application.setStyleSheet(
+                build_stylesheet(
+                    theme_name
+                )
+            )
 
-            QPushButton {
-                background-color: #303134;
-                color: #f1f3f4;
-                border: 1px solid #5f6368;
-                border-radius: 8px;
-                padding: 6px 10px;
-            }
-
-            QPushButton:hover {
-                background-color: #3c4043;
-            }
-
-            QPushButton:pressed {
-                background-color: #4a4d51;
-            }
-
-            QLineEdit,
-            QComboBox {
-                background-color: #2b2c30;
-                color: #f1f3f4;
-                border: 1px solid #5f6368;
-                border-radius: 8px;
-                padding: 5px 8px;
-            }
-
-            QListWidget {
-                background-color: #2b2c30;
-                border: 1px solid #5f6368;
-                border-radius: 10px;
-                padding: 6px;
-            }
-
-            QListWidget::item:selected {
-                border: 2px solid #ffffff;
-            }
-
-            QScrollBar:vertical {
-                background: #2b2c30;
-                width: 12px;
-            }
-
-            QScrollBar::handle:vertical {
-                background: #5f6368;
-                border-radius: 6px;
-                min-height: 24px;
-            }
-
-            QMenu {
-                background-color: #2b2c30;
-                color: #f1f3f4;
-                border: 1px solid #5f6368;
-                padding: 5px;
-            }
-
-            QMenu::item {
-                padding: 7px 25px;
-            }
-
-            QMenu::item:selected {
-                background-color: #3c4043;
-            }
-            """
+        self.central_background.set_theme(
+            theme_name
         )
+
+        # Перерисовываем списки, чтобы пустые строки
+        # и карточки выглядели корректно.
+        if hasattr(
+            self,
+            "reminders_list",
+        ):
+            self.refresh_current_view()
 
     # =========================================================
     # ТРЕЙ
@@ -539,113 +666,211 @@ class MainWindow(QMainWindow):
         self,
         reason: QSystemTrayIcon.ActivationReason,
     ) -> None:
-        if reason == QSystemTrayIcon.DoubleClick:
+        if (
+            reason
+            == QSystemTrayIcon.DoubleClick
+        ):
             self.show_from_tray()
 
-    def on_tray_message_clicked(self) -> None:
-        """
-        Если пользователь нажал на уведомление
-        о новой версии — открываем настройки
-        и предлагаем обновиться.
-        """
-
-        if not self.pending_update:
+    def on_tray_message_clicked(
+        self,
+    ) -> None:
+        if (
+            self.last_tray_message_type
+            == "update"
+            and self.pending_update
+        ):
             self.show_from_tray()
+            self.show_settings()
+
+            result = self.pending_update
+
+            answer = QMessageBox.question(
+                self,
+                "Доступно обновление",
+                (
+                    "Доступна новая версия "
+                    "Task Manager.\n\n"
+                    f"Текущая версия: "
+                    f"{result['current_version']}\n"
+                    f"Новая версия: "
+                    f"{result['latest_version']}\n\n"
+                    "Скачать и установить "
+                    "обновление?"
+                ),
+                QMessageBox.Yes
+                | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+
+            if answer == QMessageBox.Yes:
+                if result.get(
+                    "installer_url"
+                ):
+                    self.settings_view.download_and_install_update(
+                        result
+                    )
+                else:
+                    self.settings_view.show_manual_update_dialog(
+                        result
+                    )
+
             return
 
+        # Клик по уведомлению о задаче просто
+        # открывает программу.
         self.show_from_tray()
-        self.show_settings()
 
-        result = self.pending_update
-
-        latest_version = result[
-            "latest_version"
-        ]
-
-        answer = QMessageBox.question(
-            self,
-            "Доступно обновление",
-            (
-                "Доступна новая версия "
-                "Task Manager.\n\n"
-                f"Текущая версия: "
-                f"{result['current_version']}\n"
-                f"Новая версия: "
-                f"{latest_version}\n\n"
-                "Скачать и установить "
-                "обновление?"
-            ),
-            QMessageBox.Yes
-            | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-
-        if answer == QMessageBox.Yes:
-            if result.get(
-                "installer_url"
-            ):
-                self.settings_view.download_and_install_update(
-                    result
-                )
-            else:
-                self.settings_view.show_manual_update_dialog(
-                    result
-                )
-
-    def quit_application(self) -> None:
+    def quit_application(
+        self,
+    ) -> None:
         self.allow_close = True
 
         self.tray_icon.hide()
-
         self.close()
-
         QApplication.quit()
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(
+        self,
+        event,
+    ) -> None:
         if self.allow_close:
             event.accept()
             return
 
+        # Просто прячем в трей.
+        # Никакого уведомления "работает в фоне".
         event.ignore()
         self.hide()
 
-        if not self.tray_hint_shown:
-            self.tray_icon.showMessage(
-                "Task Manager",
-                (
-                    "Программа продолжает "
-                    "работать в фоне.\n"
-                    "Чтобы открыть её снова, "
-                    "дважды нажми по значку "
-                    "в трее."
-                ),
-                QSystemTrayIcon.Information,
-                5000,
+    # =========================================================
+    # КРИТИЧЕСКИЕ УВЕДОМЛЕНИЯ
+    # =========================================================
+
+    def get_critical_reminders(
+        self,
+    ) -> list[tuple]:
+        return [
+            reminder
+            for reminder in get_reminder_tasks()
+            if reminder[5] == "Критический"
+        ]
+
+    def show_critical_notification(
+        self,
+    ) -> bool:
+        critical = self.get_critical_reminders()
+
+        if not critical:
+            return False
+
+        count = len(critical)
+
+        if count == 1:
+            message = (
+                "Есть критическая задача:\n"
+                f"{critical[0][1]}"
+            )
+        else:
+            titles = [
+                reminder[1]
+                for reminder in critical[:2]
+            ]
+
+            message = (
+                f"Критических задач: {count}.\n"
+                + " • ".join(titles)
             )
 
-            self.tray_hint_shown = True
+            if count > 2:
+                message += (
+                    f"\nИ ещё: {count - 2}"
+                )
+
+        self.last_tray_message_type = (
+            "critical"
+        )
+
+        self.tray_icon.showMessage(
+            "Критические задачи",
+            message,
+            QSystemTrayIcon.Warning,
+            10000,
+        )
+
+        self.last_critical_notification_at = (
+            datetime.now()
+        )
+
+        return True
+
+    def show_startup_critical_notification(
+        self,
+    ) -> None:
+        self.show_critical_notification()
+
+    def check_scheduled_critical_notification(
+        self,
+    ) -> None:
+        now = datetime.now()
+
+        if now.hour not in CRITICAL_NOTIFICATION_HOURS:
+            return
+
+        # Таймер проверяет раз в минуту.
+        # Срабатываем только в первые две минуты часа,
+        # чтобы не пропустить слот из-за небольшого дрейфа.
+        if now.minute > 1:
+            return
+
+        slot = (
+            now.date().isoformat(),
+            now.hour,
+        )
+
+        if slot in self.sent_critical_slots:
+            return
+
+        self.sent_critical_slots.add(
+            slot
+        )
+
+        if (
+            self.last_critical_notification_at
+            is not None
+            and (
+                now
+                - self.last_critical_notification_at
+            )
+            < MIN_CRITICAL_NOTIFICATION_INTERVAL
+        ):
+            return
+
+        self.show_critical_notification()
+
+        # Чистим старые ключи, чтобы множество не росло.
+        today_text = now.date().isoformat()
+
+        self.sent_critical_slots = {
+            saved_slot
+            for saved_slot
+            in self.sent_critical_slots
+            if saved_slot[0] == today_text
+        }
 
     # =========================================================
-    # АВТОМАТИЧЕСКИЕ ОБНОВЛЕНИЯ
+    # АВТООБНОВЛЕНИЕ
     # =========================================================
 
     def start_automatic_update_check(
         self,
     ) -> None:
-        """
-        Один раз после запуска проверяем GitHub.
-
-        Проверка идёт в отдельном потоке,
-        поэтому интерфейс не зависает.
-        """
-
         if self.automatic_update_check_started:
             return
 
         self.automatic_update_check_started = True
 
         self.update_thread = QThread()
-
         self.update_worker = UpdateWorker()
 
         self.update_worker.moveToThread(
@@ -690,24 +915,18 @@ class MainWindow(QMainWindow):
         self,
         result: dict,
     ) -> None:
-        """
-        При автопроверке ничего не скачиваем
-        без разрешения пользователя.
-
-        Просто показываем уведомление Windows.
-        """
-
         self.pending_update = result
 
-        latest_version = result[
-            "latest_version"
-        ]
+        self.last_tray_message_type = (
+            "update"
+        )
 
         self.tray_icon.showMessage(
             "Доступно обновление",
             (
                 "Доступна новая версия "
-                f"Task Manager {latest_version}.\n"
+                f"Task Manager "
+                f"{result['latest_version']}.\n"
                 "Нажми на уведомление, "
                 "чтобы установить её."
             ),
@@ -718,26 +937,14 @@ class MainWindow(QMainWindow):
     def on_automatic_no_update(
         self,
     ) -> None:
-        """
-        Если обновлений нет —
-        ничего пользователю не показываем.
-        """
-
         self.pending_update = None
 
     def on_automatic_update_error(
         self,
         error_text: str,
     ) -> None:
-        """
-        Ошибка автоматической проверки
-        намеренно не показывается.
-
-        Например, если при запуске нет интернета,
-        приложение должно просто продолжить
-        нормально работать.
-        """
-
+        # Автоматическая проверка тихая.
+        # Ошибка сети не должна мешать работе.
         pass
 
     def on_update_thread_finished(
@@ -750,7 +957,9 @@ class MainWindow(QMainWindow):
     # ФИЛЬТРЫ
     # =========================================================
 
-    def refresh_category_filter(self) -> None:
+    def refresh_category_filter(
+        self,
+    ) -> None:
         current_value = (
             self.category_filter.currentText()
         )
@@ -771,7 +980,9 @@ class MainWindow(QMainWindow):
                 index
             )
 
-    def update_filters_visibility(self) -> None:
+    def update_filters_visibility(
+        self,
+    ) -> None:
         visible = self.current_view in (
             "all",
             "today",
@@ -789,7 +1000,9 @@ class MainWindow(QMainWindow):
                 visible
             )
 
-    def update_reminders_visibility(self) -> None:
+    def update_reminders_visibility(
+        self,
+    ) -> None:
         visible = (
             self.current_view
             != "settings"
@@ -798,13 +1011,12 @@ class MainWindow(QMainWindow):
         self.reminders_label.setVisible(
             visible
         )
-
         self.reminders_list.setVisible(
             visible
         )
 
     # =========================================================
-    # ЦВЕТА ЗАДАЧ
+    # КАРТОЧКИ ЗАДАЧ
     # =========================================================
 
     def get_task_color(
@@ -812,7 +1024,6 @@ class MainWindow(QMainWindow):
         current_priority: str,
         status: str,
     ) -> QColor:
-
         if status == "Выполнена":
             return QColor(
                 200,
@@ -883,22 +1094,15 @@ class MainWindow(QMainWindow):
             "Segoe UI",
             10,
         )
-
         font.setBold(
             bold
         )
-
         return font
-
-    # =========================================================
-    # ФОРМАТИРОВАНИЕ ЗАДАЧ
-    # =========================================================
 
     def format_task_item(
         self,
         task: tuple,
     ) -> QListWidgetItem:
-
         (
             task_id,
             title,
@@ -934,10 +1138,8 @@ class MainWindow(QMainWindow):
 
         recurring_text = (
             recurring_type
-            if (
-                is_recurring
-                and recurring_type
-            )
+            if is_recurring
+            and recurring_type
             else "Нет"
         )
 
@@ -950,8 +1152,7 @@ class MainWindow(QMainWindow):
             f"   •   Статус: {status}"
             f"   •   Прогресс: {progress}%\n"
             f"Срок: {deadline_text}"
-            f"   •   Повторение: "
-            f"{recurring_text}"
+            f"   •   Повторение: {recurring_text}"
         )
 
         item = QListWidgetItem(
@@ -989,10 +1190,12 @@ class MainWindow(QMainWindow):
         return item
 
     # =========================================================
-    # НАПОМИНАНИЯ
+    # НАПОМИНАНИЯ В ОКНЕ
     # =========================================================
 
-    def load_reminders(self) -> None:
+    def load_reminders(
+        self,
+    ) -> None:
         self.reminders_list.clear()
 
         reminders = get_reminder_tasks()
@@ -1005,12 +1208,14 @@ class MainWindow(QMainWindow):
                 "Срочных напоминаний нет."
             )
 
+            theme = get_theme(
+                self.current_theme
+            )
+
             item.setForeground(
                 QBrush(
                     QColor(
-                        220,
-                        220,
-                        220,
+                        theme["muted"]
                     )
                 )
             )
@@ -1104,79 +1309,10 @@ class MainWindow(QMainWindow):
             max_visible_items,
         )
 
-        new_height = (
+        self.reminders_list.setFixedHeight(
             visible_count
             * row_height
             + 18
-        )
-
-        self.reminders_list.setFixedHeight(
-            new_height
-        )
-
-    def show_startup_notification(
-        self,
-    ) -> None:
-        reminders = get_reminder_tasks()
-
-        if not reminders:
-            return
-
-        critical_count = 0
-        urgent_count = 0
-        total_count = len(
-            reminders
-        )
-
-        for reminder in reminders:
-            current_priority = (
-                reminder[5]
-            )
-
-            if (
-                current_priority
-                == "Критический"
-            ):
-                critical_count += 1
-
-            elif (
-                current_priority
-                == "Срочный"
-            ):
-                urgent_count += 1
-
-        parts = []
-
-        if critical_count > 0:
-            parts.append(
-                f"критических: "
-                f"{critical_count}"
-            )
-
-        if urgent_count > 0:
-            parts.append(
-                f"срочных: "
-                f"{urgent_count}"
-            )
-
-        if not parts:
-            parts.append(
-                f"напоминаний: "
-                f"{total_count}"
-            )
-
-        message = (
-            "Есть задачи: "
-            + ", ".join(
-                parts
-            )
-        )
-
-        self.tray_icon.showMessage(
-            "Task Manager",
-            message,
-            QSystemTrayIcon.Information,
-            8000,
         )
 
     # =========================================================
@@ -1188,7 +1324,6 @@ class MainWindow(QMainWindow):
         tasks: list[tuple],
         empty_text: str,
     ) -> None:
-
         self.tasks_list.clear()
 
         if not tasks:
@@ -1196,12 +1331,14 @@ class MainWindow(QMainWindow):
                 empty_text
             )
 
+            theme = get_theme(
+                self.current_theme
+            )
+
             item.setForeground(
                 QBrush(
                     QColor(
-                        220,
-                        220,
-                        220,
+                        theme["muted"]
                     )
                 )
             )
@@ -1209,7 +1346,6 @@ class MainWindow(QMainWindow):
             self.tasks_list.addItem(
                 item
             )
-
             return
 
         for task in tasks:
@@ -1219,21 +1355,19 @@ class MainWindow(QMainWindow):
                 )
             )
 
-    def load_tasks(self) -> None:
-        tasks = get_all_tasks()
-
+    def load_tasks(
+        self,
+    ) -> None:
         self.populate_tasks_list(
-            tasks,
+            get_all_tasks(),
             "Пока нет задач.",
         )
 
     def load_today_tasks(
         self,
     ) -> None:
-        tasks = get_today_tasks()
-
         self.populate_tasks_list(
-            tasks,
+            get_today_tasks(),
             (
                 "На сегодня подходящих "
                 "задач нет."
@@ -1241,10 +1375,12 @@ class MainWindow(QMainWindow):
         )
 
     # =========================================================
-    # ПРИМЕНЕНИЕ ФИЛЬТРОВ
+    # ФИЛЬТРЫ
     # =========================================================
 
-    def apply_filters(self) -> None:
+    def apply_filters(
+        self,
+    ) -> None:
         if self.current_view not in (
             "all",
             "today",
@@ -1267,14 +1403,10 @@ class MainWindow(QMainWindow):
         )
 
         if self.current_view == "today":
-            today_tasks = (
-                get_today_tasks()
-            )
-
             today_ids = {
                 task[0]
                 for task
-                in today_tasks
+                in get_today_tasks()
             }
 
             tasks = [
@@ -1293,7 +1425,6 @@ class MainWindow(QMainWindow):
                     "не найдено."
                 ),
             )
-
         else:
             self.populate_tasks_list(
                 tasks,
@@ -1303,7 +1434,9 @@ class MainWindow(QMainWindow):
                 ),
             )
 
-    def reset_filters(self) -> None:
+    def reset_filters(
+        self,
+    ) -> None:
         self.search_input.clear()
 
         self.refresh_category_filter()
@@ -1311,11 +1444,9 @@ class MainWindow(QMainWindow):
         self.category_filter.setCurrentText(
             "Все"
         )
-
         self.status_filter.setCurrentText(
             "Все"
         )
-
         self.priority_filter.setCurrentText(
             "Все"
         )
@@ -1326,14 +1457,13 @@ class MainWindow(QMainWindow):
     # НАВИГАЦИЯ
     # =========================================================
 
-    def show_all_tasks(self) -> None:
+    def show_all_tasks(
+        self,
+    ) -> None:
         self.current_view = "all"
 
         self.title_label.setText(
-            (
-                "Мой менеджер задач — "
-                "Все задачи"
-            )
+            "Мой менеджер задач — Все задачи"
         )
 
         self.stacked_widget.setCurrentWidget(
@@ -1342,17 +1472,15 @@ class MainWindow(QMainWindow):
 
         self.update_filters_visibility()
         self.update_reminders_visibility()
-
         self.load_tasks()
 
-    def show_today_tasks(self) -> None:
+    def show_today_tasks(
+        self,
+    ) -> None:
         self.current_view = "today"
 
         self.title_label.setText(
-            (
-                "Мой менеджер задач — "
-                "Сегодня"
-            )
+            "Мой менеджер задач — Сегодня"
         )
 
         self.stacked_widget.setCurrentWidget(
@@ -1361,17 +1489,15 @@ class MainWindow(QMainWindow):
 
         self.update_filters_visibility()
         self.update_reminders_visibility()
-
         self.load_today_tasks()
 
-    def show_calendar(self) -> None:
+    def show_calendar(
+        self,
+    ) -> None:
         self.current_view = "calendar"
 
         self.title_label.setText(
-            (
-                "Мой менеджер задач — "
-                "Календарь"
-            )
+            "Мой менеджер задач — Календарь"
         )
 
         self.stacked_widget.setCurrentWidget(
@@ -1380,17 +1506,15 @@ class MainWindow(QMainWindow):
 
         self.update_filters_visibility()
         self.update_reminders_visibility()
-
         self.calendar_view.refresh()
 
-    def show_statistics(self) -> None:
+    def show_statistics(
+        self,
+    ) -> None:
         self.current_view = "statistics"
 
         self.title_label.setText(
-            (
-                "Мой менеджер задач — "
-                "Статистика"
-            )
+            "Мой менеджер задач — Статистика"
         )
 
         self.stacked_widget.setCurrentWidget(
@@ -1399,17 +1523,15 @@ class MainWindow(QMainWindow):
 
         self.update_filters_visibility()
         self.update_reminders_visibility()
-
         self.statistics_view.refresh()
 
-    def show_archive(self) -> None:
+    def show_archive(
+        self,
+    ) -> None:
         self.current_view = "archive"
 
         self.title_label.setText(
-            (
-                "Мой менеджер задач — "
-                "Архив"
-            )
+            "Мой менеджер задач — Архив"
         )
 
         self.stacked_widget.setCurrentWidget(
@@ -1418,17 +1540,15 @@ class MainWindow(QMainWindow):
 
         self.update_filters_visibility()
         self.update_reminders_visibility()
-
         self.archive_view.refresh()
 
-    def show_settings(self) -> None:
+    def show_settings(
+        self,
+    ) -> None:
         self.current_view = "settings"
 
         self.title_label.setText(
-            (
-                "Мой менеджер задач — "
-                "Настройки"
-            )
+            "Мой менеджер задач — Настройки"
         )
 
         self.stacked_widget.setCurrentWidget(
@@ -1437,11 +1557,10 @@ class MainWindow(QMainWindow):
 
         self.update_filters_visibility()
         self.update_reminders_visibility()
-
         self.settings_view.refresh()
 
     # =========================================================
-    # ОБНОВЛЕНИЕ ПРЕДСТАВЛЕНИЙ
+    # REFRESH
     # =========================================================
 
     def refresh_current_view(
@@ -1481,7 +1600,7 @@ class MainWindow(QMainWindow):
         self.settings_view.refresh()
 
     # =========================================================
-    # ДОБАВЛЕНИЕ ЗАДАЧИ
+    # ДОБАВЛЕНИЕ / РЕДАКТИРОВАНИЕ
     # =========================================================
 
     def open_add_task_dialog(
@@ -1495,15 +1614,10 @@ class MainWindow(QMainWindow):
             self.refresh_all_views()
             self.refresh_current_view()
 
-    # =========================================================
-    # РЕДАКТИРОВАНИЕ ЗАДАЧИ
-    # =========================================================
-
     def open_edit_task_dialog_from_item(
         self,
         item: QListWidgetItem,
     ) -> None:
-
         task_id = item.data(
             256
         )
@@ -1519,7 +1633,6 @@ class MainWindow(QMainWindow):
         self,
         task_id: int,
     ) -> None:
-
         dialog = EditTaskDialog(
             task_id
         )

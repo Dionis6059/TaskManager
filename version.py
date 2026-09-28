@@ -1,2 +1,2 @@
 APP_NAME = "Task Manager"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.1.0"
