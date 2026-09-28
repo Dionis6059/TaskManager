@@ -1,6 +1,7 @@
 import hashlib
 import json
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -9,9 +10,11 @@ from pathlib import Path
 GITHUB_OWNER = "Dionis6059"
 GITHUB_REPOSITORY = "TaskManager"
 
-LATEST_RELEASE_API_URL = (
-    f"https://api.github.com/repos/"
-    f"{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/latest"
+# Больше не используем GitHub REST API для проверки версии.
+# Читаем обычный JSON-файл из репозитория.
+UPDATE_MANIFEST_URL = (
+    f"https://raw.githubusercontent.com/"
+    f"{GITHUB_OWNER}/{GITHUB_REPOSITORY}/main/version.json"
 )
 
 UPDATE_DIR = (
@@ -22,15 +25,6 @@ UPDATE_DIR = (
 
 
 def normalize_version(version: str) -> tuple[int, ...]:
-    """
-    Преобразует:
-        v1.0.1
-        1.0.1
-
-    в:
-        (1, 0, 1)
-    """
-
     version = version.strip()
 
     if version.lower().startswith("v"):
@@ -90,16 +84,23 @@ def is_newer_version(
     return latest > current
 
 
-def get_latest_release() -> dict:
+def get_update_manifest() -> dict:
+    # cache-bust нужен, чтобы после публикации новой версии
+    # клиент не получил старый version.json из кэша.
+    url = (
+        f"{UPDATE_MANIFEST_URL}"
+        f"?t={int(time.time())}"
+    )
+
     request = urllib.request.Request(
-        LATEST_RELEASE_API_URL,
+        url,
         headers={
             "User-Agent": (
                 "TaskManager-UpdateChecker"
             ),
-            "Accept": (
-                "application/vnd.github+json"
-            ),
+            "Accept": "application/json",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         },
     )
 
@@ -116,21 +117,22 @@ def get_latest_release() -> dict:
 
     except urllib.error.HTTPError as error:
         raise RuntimeError(
-            "GitHub вернул ошибку "
+            "Не удалось получить информацию "
+            "об обновлении.\n"
             f"HTTP {error.code}."
         ) from error
 
     except urllib.error.URLError as error:
         raise RuntimeError(
             "Не удалось подключиться "
-            "к GitHub.\n"
-            "Проверь подключение "
-            "к интернету."
+            "к серверу обновлений.\n"
+            "Проверь подключение к интернету."
         ) from error
 
     except TimeoutError as error:
         raise RuntimeError(
-            "GitHub не ответил вовремя."
+            "Сервер обновлений "
+            "не ответил вовремя."
         ) from error
 
     try:
@@ -141,103 +143,88 @@ def get_latest_release() -> dict:
     except json.JSONDecodeError as error:
         raise RuntimeError(
             "Не удалось прочитать "
-            "ответ GitHub."
+            "информацию об обновлении."
         ) from error
 
-    tag = data.get(
-        "tag_name",
-        "",
-    )
-
-    if not tag:
-        raise RuntimeError(
-            "GitHub не вернул "
-            "номер последней версии."
-        )
-
-    version = tag
-
-    if version.lower().startswith("v"):
-        version = version[1:]
-
-    installer_url = ""
-    installer_name = ""
-    installer_digest = ""
-
-    for asset in data.get(
-        "assets",
-        [],
-    ):
-        asset_name = asset.get(
-            "name",
+    version = str(
+        data.get(
+            "version",
             "",
         )
+    ).strip()
 
-        asset_name_lower = (
-            asset_name.lower()
+    if not version:
+        raise RuntimeError(
+            "В файле обновления "
+            "не указан номер версии."
         )
 
-        if (
-            asset_name_lower.endswith(
-                ".exe"
-            )
-            and "setup"
-            in asset_name_lower
-        ):
-            installer_name = (
-                asset_name
-            )
+    installer_url = str(
+        data.get(
+            "installer_url",
+            "",
+        )
+    ).strip()
 
-            installer_url = (
-                asset.get(
-                    "browser_download_url",
-                    "",
-                )
-            )
+    installer_name = str(
+        data.get(
+            "installer_name",
+            "",
+        )
+    ).strip()
 
-            installer_digest = (
-                asset.get(
-                    "digest",
-                    "",
-                )
-                or ""
-            )
+    release_url = str(
+        data.get(
+            "release_url",
+            "",
+        )
+    ).strip()
 
-            break
+    release_name = str(
+        data.get(
+            "release_name",
+            f"Task Manager v{version}",
+        )
+    ).strip()
+
+    release_notes = str(
+        data.get(
+            "release_notes",
+            "",
+        )
+    )
+
+    sha256 = str(
+        data.get(
+            "sha256",
+            "",
+        )
+    ).strip()
+
+    installer_digest = ""
+
+    if sha256:
+        installer_digest = (
+            f"sha256:{sha256}"
+        )
 
     return {
         "version": version,
-        "tag": tag,
-        "name": data.get(
-            "name",
-            tag,
-        ),
-        "url": data.get(
-            "html_url",
-            "",
-        ),
-        "body": data.get(
-            "body",
-            "",
-        ),
-        "installer_url": (
-            installer_url
-        ),
-        "installer_name": (
-            installer_name
-        ),
-        "installer_digest": (
-            installer_digest
-        ),
+        "release_url": release_url,
+        "installer_url": installer_url,
+        "installer_name": installer_name,
+        "installer_digest": installer_digest,
+        "release_name": release_name,
+        "release_notes": release_notes,
     }
 
 
 def check_for_updates(
     current_version: str,
 ) -> dict:
-    release = get_latest_release()
+    manifest = get_update_manifest()
 
-    latest_version = release[
+    latest_version = manifest[
         "version"
     ]
 
@@ -255,28 +242,34 @@ def check_for_updates(
             latest_version
         ),
         "release_url": (
-            release["url"]
+            manifest[
+                "release_url"
+            ]
         ),
         "installer_url": (
-            release[
+            manifest[
                 "installer_url"
             ]
         ),
         "installer_name": (
-            release[
+            manifest[
                 "installer_name"
             ]
         ),
         "installer_digest": (
-            release[
+            manifest[
                 "installer_digest"
             ]
         ),
         "release_name": (
-            release["name"]
+            manifest[
+                "release_name"
+            ]
         ),
         "release_notes": (
-            release["body"]
+            manifest[
+                "release_notes"
+            ]
         ),
     }
 
@@ -308,14 +301,8 @@ def verify_installer(
     installer_path: Path,
     expected_digest: str,
 ) -> bool:
-    """
-    Если GitHub вернул SHA256,
-    проверяем скачанный файл.
-
-    Если digest отсутствует,
-    просто пропускаем проверку.
-    """
-
+    # SHA256 в version.json можно оставить пустым.
+    # Тогда проверка просто пропускается.
     if not expected_digest:
         return True
 
@@ -357,8 +344,8 @@ def download_installer(
 ) -> Path:
     if not installer_url:
         raise RuntimeError(
-            "В последнем релизе "
-            "не найден установщик."
+            "Для новой версии "
+            "не указан установщик."
         )
 
     if not installer_name:
@@ -411,7 +398,7 @@ def download_installer(
         raise RuntimeError(
             "Не удалось скачать "
             "обновление.\n"
-            "Ошибка GitHub: "
+            "Ошибка сервера: "
             f"HTTP {error.code}."
         ) from error
 

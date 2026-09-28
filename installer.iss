@@ -1,5 +1,5 @@
 #define MyAppName "Task Manager"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "Dionis6059"
 #define MyAppExeName "TaskManager.exe"
 
@@ -16,7 +16,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 
 OutputDir=installer
-OutputBaseFilename=TaskManager-Setup-1.1.1
+OutputBaseFilename=TaskManager-Setup-1.1.2
 
 Compression=lzma
 SolidCompression=yes

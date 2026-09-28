@@ -1,0 +1,9 @@
+{
+  "version": "1.1.2",
+  "release_name": "Task Manager v1.1.2",
+  "release_url": "https://github.com/Dionis6059/TaskManager/releases/tag/v1.1.2",
+  "installer_name": "TaskManager-Setup-1.1.2.exe",
+  "installer_url": "https://github.com/Dionis6059/TaskManager/releases/download/v1.1.2/TaskManager-Setup-1.1.2.exe",
+  "sha256": "",
+  "release_notes": "Исправлена система проверки обновлений: приложение больше не использует GitHub REST API и не упирается в лимит HTTP 403."
+}
