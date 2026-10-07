@@ -1,0 +1,66 @@
+name: Zone 3 Round 5 Verification
+
+on:
+  push:
+    branches:
+      - zone3-round5-verification
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: x
+          POSTGRES_DB: zone3_verification
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zone3_verification"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      ZONE3_DATABASE_URL: postgresql://postgres:x@127.0.0.1:5432/zone3_verification
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rehydrate Round 5 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .zone3-round5/payload.b64 > /tmp/zone3-r5.zip
+          unzip -q /tmp/zone3-r5.zip -d /tmp/zone3-r5
+          cp -a /tmp/zone3-r5/. .
+
+      - name: Install verification dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest psycopg[binary]
+
+      - name: PostgreSQL version
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          with psycopg.connect(os.environ["ZONE3_DATABASE_URL"]) as c:
+              with c.cursor() as cur:
+                  cur.execute("select version()")
+                  print(cur.fetchone()[0])
+          PY
+
+      - name: Run canonical Zone 3 Round 5 verification
+        shell: bash
+        run: |
+          set -o pipefail
+          bash backend/tests/zone3/verification/run_all.sh 2>&1 | tee zone3-round5-output.txt
+
+      - name: Upload exact output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zone3-round5-output
+          path: zone3-round5-output.txt
