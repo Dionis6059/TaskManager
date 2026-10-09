@@ -1,4 +1,4 @@
-name: Zone 3 Round 5 Verification
+name: Zone 3 Round 7 Verification Reconciliation
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rehydrate Round 5 package
+      - name: Rehydrate Round 7 reconciliation package
         shell: bash
         run: |
           set -euo pipefail
@@ -52,15 +52,15 @@ jobs:
                   print(cur.fetchone()[0])
           PY
 
-      - name: Run canonical Zone 3 Round 5 verification
+      - name: Collect actual PostgreSQL tests\n        shell: bash\n        run: |\n          set -o pipefail\n          python -m pytest --collect-only -q backend/tests/zone3/verification/db -m db_required 2>&1 | tee zone3-round7-collection.txt\n\n      - name: Run canonical Zone 3 Round 7 verification
         shell: bash
         run: |
           set -o pipefail
-          bash backend/tests/zone3/verification/run_all.sh 2>&1 | tee zone3-round5-output.txt
+          bash backend/tests/zone3/verification/run_all.sh 2>&1 | tee zone3-round7-output.txt
 
       - name: Upload exact output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zone3-round5-output
-          path: zone3-round5-output.txt
+          path: zone3-round7-output.txt
