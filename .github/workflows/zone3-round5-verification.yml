@@ -52,7 +52,13 @@ jobs:
                   print(cur.fetchone()[0])
           PY
 
-      - name: Collect actual PostgreSQL tests\n        shell: bash\n        run: |\n          set -o pipefail\n          python -m pytest --collect-only -q backend/tests/zone3/verification/db -m db_required 2>&1 | tee zone3-round7-collection.txt\n\n      - name: Run canonical Zone 3 Round 7 verification
+      - name: Collect actual PostgreSQL tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest --collect-only -q backend/tests/zone3/verification/db -m db_required 2>&1 | tee zone3-round7-collection.txt
+
+      - name: Run canonical Zone 3 Round 7 verification
         shell: bash
         run: |
           set -o pipefail
@@ -62,5 +68,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zone3-round5-output
-          path: zone3-round7-output.txt
+          name: zone3-round7-evidence
+          path: |
+            zone3-round7-output.txt
+            zone3-round7-collection.txt
